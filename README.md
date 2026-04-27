@@ -2096,6 +2096,24 @@ Only reference-free metrics: **Faithfulness** (grounded in context?), **Answer R
 
 ---
 
+**Q23: Given 10 retrieved chunks where 7 are relevant to the question, and a reference answer with 4 claims where only 2 claims can be attributed to any retrieved chunk (1 from a relevant chunk, 1 from an irrelevant chunk) — what is the Context Recall score?**
+
+**Context Recall = 2/4 = 0.5**
+
+$$\text{Context Recall} = \frac{|\text{reference claims attributable to retrieved context}|}{|\text{total reference claims}|} = \frac{2}{4} = 0.5$$
+
+The distractors in this problem are intentional — Context Recall is **answer-oriented**, not question-oriented:
+
+| Detail | Matters for Context Recall? | Why |
+|---|---|---|
+| 10 chunks retrieved | No | Context Recall doesn't count chunks |
+| 7 chunks relevant to the *question* | No | Relevance to the question is irrelevant to this metric |
+| Which chunk the attributable claims came from | No | RAGAS only asks "can this claim be attributed to *any* retrieved chunk?" |
+
+Only two numbers matter: **how many reference claims are covered** (2) over **total reference claims** (4). The remaining 2 claims are simply not covered by any retrieved chunk, producing a score of 0.5. This is the key distinction between Context Recall and standard Recall@K — RAGAS measures coverage of the *reference answer's claims*, not retrieval of *question-relevant documents*.
+
+---
+
 ## 24. Quick Reference Cheat Sheet
 
 ### Essential Imports
