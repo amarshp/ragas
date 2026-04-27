@@ -162,7 +162,8 @@ where $E_{g_i}$ = embedding of generated question $i$, $E_o$ = embedding of orig
 ### 6. Answer Correctness
 
 - Composite score: $w \cdot F1_{\text{factual}} + (1-w) \cdot \text{SemanticSimilarity}$
-- Default weight $w = 0.5$
+- Default weights: $w = 0.75$ factuality, $0.25$ semantic similarity
+- **Semantic Similarity**: embeds the full response and full reference strings, then computes cosine similarity (L2-normalize both vectors, dot product). Uses whatever embedding model is configured (typically OpenAI `text-embedding-ada-002`).
 - Combines factual accuracy with meaning closeness
 - Requires reference → offline only
 
@@ -175,10 +176,23 @@ where $E_{g_i}$ = embedding of generated question $i$, $E_o$ = embedding of orig
 
 ### 8. Noise Sensitivity
 
-- Measures error rate: incorrect claims / total claims
 - **Lower is better** (unlike all other metrics)
 - Tests robustness when retriever returns noisy/misleading chunks
 - Requires reference → offline only
+
+**How incorrect claims are measured** (3 NLI passes):
+1. Decompose both response and reference into atomic claims
+2. Check each response claim against the **reference** via NLI → not inferable = **incorrect**
+3. Check each response claim against each **retrieved context** → determines which context sourced the claim
+4. Check each ground truth claim against each **context** → a context is "relevant" if any ground truth claim can be inferred from it
+
+**Score** = fraction of response claims that are both **(a) incorrect** (not supported by reference) AND **(b) attributable to a retrieved context**
+
+**Two variants**:
+- **Relevant** (default): incorrect claims sourced from contexts that *do* contain some ground truth info — the context was topically on-point but still led the model astray
+- **Irrelevant**: incorrect claims sourced from contexts with *no* ground truth support — pure noise that polluted the answer
+
+Both range 0–1. Diagnostic: tells you *where* the errors come from (misleading relevant contexts vs. pure noise).
 
 ---
 
