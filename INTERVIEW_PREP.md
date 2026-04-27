@@ -196,6 +196,30 @@ Both range 0–1. Diagnostic: tells you *where* the errors come from (misleading
 
 ---
 
+### 9. Classic Baseline Metrics (for contrast)
+
+These are not RAGAS-specific but you need crisp definitions to contrast with RAGAS metrics.
+
+**Standard Precision@K**:
+$$\text{Precision@K} = \frac{\text{relevant documents in top K}}{K}$$
+"Of the K documents I retrieved, how many are relevant to the *question*?" Flat ratio — no ranking reward, question-oriented.
+
+**Standard Recall@K**:
+$$\text{Recall@K} = \frac{\text{relevant documents in top K}}{\text{total relevant documents in corpus}}$$
+"Of all relevant documents in the corpus, how many did I find?" Requires knowing the full set of relevant docs — only usable offline.
+
+**BLEU** (Bilingual Evaluation Understudy):
+N-gram precision of response vs reference. Counts overlapping word sequences (unigrams through 4-grams) with a brevity penalty. Fast, deterministic, zero cost. Misses paraphrases ("quick" vs "fast" score 0 even though semantically identical).
+
+**ROUGE** (Recall-Oriented Understudy for Gisting Evaluation):
+N-gram recall of response vs reference. ROUGE-1 = unigram overlap, ROUGE-L = longest common subsequence. Same pros/cons as BLEU — cheap and deterministic but surface-level.
+
+**Why RAGAS improves on all of these**:
+- Context Precision/Recall are *answer-oriented* (vs question-oriented) and *claim-level* — they measure what actually matters for RAG quality
+- Faithfulness and factual metrics use NLI rather than surface n-gram overlap → catch semantically equivalent paraphrases and semantic errors BLEU/ROUGE miss
+
+---
+
 ## Part 3: Cross-Cutting Concepts
 
 ### Reference-Free vs Reference-Required
