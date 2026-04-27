@@ -509,13 +509,85 @@ class ResponseRelevancy(MetricWithLLM, MetricWithEmbeddings, SingleTurnMetric):
 
 > *"Did the retriever capture the key named entities from the reference?"*
 
-Extracts named entities from both reference and retrieved contexts, then computes entity-level recall.
+**Score Range**: 0.0 to 1.0
+
+**Formula**:
+
+$$\text{Context Entity Recall} = \frac{|CE_{\text{retrieved}} \cap CE_{\text{reference}}|}{|CE_{\text{reference}}|}$$
+
+where $CE$ = set of named entities extracted from the text.
+
+**Algorithm**:
+
+```
+1. Extract named entities from reference answer → reference_entities
+2. Extract named entities from retrieved contexts → context_entities
+3. Compute set intersection
+4. Score = |intersection| / |reference_entities|
+```
+
+**Required Columns**: `reference`, `retrieved_contexts`
+
+**Type**: LLM-based (uses LLM for entity extraction)
+
+**Use case**: Ensures retriever captures documents containing the key entities. Useful when entity coverage is more important than full-text coverage.
+
+---
 
 ### 6.6 Noise Sensitivity
 
 > *"How much does irrelevant context degrade the response?"*
 
-Measures the system's robustness when noisy/irrelevant chunks are mixed into retrieved contexts.
+**Score Range**: 0.0 to 1.0 (**lower is better** — measures error rate)
+
+**Formula**:
+
+$$\text{Noise Sensitivity} = \frac{|\text{incorrect claims in response}|}{|\text{total claims in response}|}$$
+
+**Algorithm**:
+
+```
+1. Decompose response into atomic factual claims
+2. Verify each claim against the reference answer
+3. Count claims that contradict or are unsupported by the reference
+4. Score = incorrect_claims / total_claims
+```
+
+**Modes**: `relevant` (noise from relevant docs) and `irrelevant` (noise from irrelevant docs)
+
+**Required Columns**: `user_input`, `response`, `reference`, `retrieved_contexts`
+
+**Type**: LLM-based
+
+**Use case**: Measures how robust the generation model is when the retriever returns noisy or misleading chunks alongside relevant ones.
+
+---
+
+### 6.7 Multimodal Faithfulness
+
+> *"Is the response factually consistent with both visual and textual context?"*
+
+**Score Range**: Binary (0 or 1)
+
+**Algorithm**: Same claim-extraction + NLI pipeline as Faithfulness, but the context can include images (paths/URLs). Requires a vision-capable LLM (e.g., GPT-4o).
+
+**Required Columns**: `response`, `retrieved_contexts` (may include image references)
+
+**Type**: LLM-based (vision model)
+
+---
+
+### 6.8 Multimodal Relevance
+
+> *"Is the response relevant to the multimodal context provided?"*
+
+**Score Range**: Binary (0 or 1)
+
+**Required Columns**: `user_input`, `response`, `retrieved_contexts`
+
+**Type**: LLM-based (vision model)
+
+**Use case**: RAG systems that retrieve images alongside text (e.g., product catalogs, medical imaging).
 
 ---
 
@@ -523,41 +595,288 @@ Measures the system's robustness when noisy/irrelevant chunks are mixed into ret
 
 ### 7.1 Tool Call Accuracy
 
-Compares the tools actually called by the agent against reference tool calls — checks both tool name and arguments.
+> *"Did the agent call the right tools with the right arguments in the right order?"*
+
+**Score Range**: 0.0 to 1.0
+
+**Algorithm**:
+
+```
+1. Extract tool calls made by the agent from conversation history
+2. Compare against reference_tool_calls:
+   a. Match tool names (exact string match)
+   b. Match tool arguments (key-value comparison)
+3. In strict_order mode (default): sequence alignment matters
+   In flexible mode: order-independent matching
+4. Score = correctly matched calls / total reference calls
+```
+
+**Required Columns**: `user_input` (multi-turn messages), `reference_tool_calls`
+
+**Type**: Non-LLM (exact matching — deterministic)
+
+**Parameters**: `strict_order` (default: `True`)
+
+---
 
 ### 7.2 Tool Call F1
 
-Computes F1 score between predicted and reference tool calls, balancing precision and recall of tool usage.
+> *"Balancing tool call precision and recall."*
+
+**Score Range**: 0.0 to 1.0
+
+**Formula**:
+
+$$\text{Precision} = \frac{|\text{correct tool calls}|}{|\text{predicted tool calls}|}$$
+
+$$\text{Recall} = \frac{|\text{correct tool calls}|}{|\text{reference tool calls}|}$$
+
+$$F1 = \frac{2 \times \text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}}$$
+
+**Required Columns**: `user_input`, `reference_tool_calls`
+
+**Type**: Non-LLM (set-based comparison — deterministic)
+
+**Use case**: When the agent might call extra tools (hurts precision) or miss required tools (hurts recall), and you want a balanced view.
+
+---
 
 ### 7.3 Agent Goal Accuracy
 
-Evaluates whether a multi-turn agent conversation ultimately achieved the user's intended goal.
+> *"Did the agent ultimately accomplish what the user wanted?"*
+
+**Score Range**: Binary (0 or 1) or 0.0 to 1.0
+
+**Variants**:
+
+| Class | Reference Needed | Method |
+|---|---|---|
+| `AgentGoalAccuracyWithReference` | Yes | LLM compares outcome against reference |
+| `AgentGoalAccuracyWithoutReference` | No | LLM infers goal from conversation and judges completion |
+
+**Algorithm**:
+
+```
+1. Extract the user's goal from conversation history
+2. Analyze the agent's final outcome
+3. LLM judges: "Did the agent achieve the stated goal?"
+4. Returns binary verdict + reasoning
+```
+
+**Required Columns**: `user_input` (multi-turn), `reference` (optional)
+
+**Type**: LLM-based
+
+---
 
 ### 7.4 Topic Adherence
 
-Measures whether the agent stays on-topic throughout a multi-turn conversation without drifting.
+> *"Did the agent stay within its designated topic boundaries?"*
+
+**Score Range**: 0.0 to 1.0
+
+**Modes**: `precision`, `recall`, `f1`
+
+**Formulas**:
+
+$$\text{Precision} = \frac{|\text{response topics} \cap \text{reference topics}|}{|\text{response topics}|}$$
+
+$$\text{Recall} = \frac{|\text{response topics} \cap \text{reference topics}|}{|\text{reference topics}|}$$
+
+**Algorithm**:
+
+```
+1. Extract topics discussed in the agent's responses (LLM-based classification)
+2. Compare against reference_topics (predefined allowed topic set)
+3. Compute precision/recall/F1 of topic coverage
+```
+
+**Required Columns**: `user_input` (multi-turn messages), `reference_topics`
+
+**Type**: LLM-based
+
+**Use case**: Ensuring customer service bots don't go off-script or discuss unauthorized topics.
 
 ---
 
 ## 8. Deep Dive: NLP Comparison Metrics
 
-### Traditional (Non-LLM) Metrics
+### 8.1 Factual Correctness
 
-| Metric | What It Measures | Deterministic |
-|---|---|---|
-| **BLEU Score** | N-gram precision (machine translation heritage) | ✓ |
-| **ROUGE Score** | N-gram recall (summarization heritage) | ✓ |
-| **CHRF Score** | Character-level F-score | ✓ |
-| **Exact Match** | Binary: response == reference | ✓ |
-| **String Presence** | Whether specific strings appear in response | ✓ |
+> *"Are the facts in the response correct compared to the reference?"*
 
-### LLM-Based Comparison Metrics
+**Score Range**: 0.0 to 1.0
 
-| Metric | What It Measures | Deterministic |
-|---|---|---|
-| **Factual Correctness** | Whether response facts match reference facts (claim-level) | ✗ |
-| **Semantic Similarity** | Embedding-based meaning comparison | ✓ |
-| **Non-LLM String Similarity** | Edit distance / Levenshtein | ✓ |
+**Modes**: `f1` (default), `precision`, `recall`
+
+**Formulas**:
+
+$$\text{Precision} = \frac{TP}{TP + FP} \qquad \text{Recall} = \frac{TP}{TP + FN} \qquad F1 = \frac{2 \cdot P \cdot R}{P + R}$$
+
+where TP = response claims supported by reference, FP = response claims not in reference, FN = reference claims missing from response.
+
+**Algorithm**:
+
+```
+1. Decompose response into atomic claims
+2. Decompose reference into atomic claims
+3. Use NLI to classify each response claim as:
+   - TP (supported by reference)
+   - FP (contradicts or absent from reference)
+4. Use NLI to find reference claims missing from response (FN)
+5. Compute precision/recall/F1
+```
+
+**Parameters**: `atomicity` (high/low — granularity of claim decomposition), `coverage` (high/low)
+
+**Required Columns**: `response`, `reference`
+
+**Type**: LLM-based
+
+---
+
+### 8.2 Answer Correctness
+
+> *"Combining semantic meaning and factual accuracy into a single score."*
+
+**Score Range**: 0.0 to 1.0
+
+**Formula**:
+
+$$\text{Answer Correctness} = w \cdot F1_{\text{factual}} + (1 - w) \cdot \text{Semantic Similarity}$$
+
+where $w$ is a configurable weight (default: 0.5).
+
+**Required Columns**: `user_input`, `response`, `reference`
+
+**Type**: Hybrid (LLM for factual F1 + embeddings for semantic similarity)
+
+---
+
+### 8.3 Semantic Similarity
+
+> *"How close in meaning are the response and reference?"*
+
+**Score Range**: 0.0 to 1.0
+
+**Formula**:
+
+$$\text{Semantic Similarity} = \cos(\mathbf{E}_{\text{response}},\ \mathbf{E}_{\text{reference}})$$
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Embedding-based (deterministic)
+
+**Notes**: Can optionally use cross-encoder models for higher accuracy.
+
+---
+
+### 8.4 Non-LLM String Similarity
+
+> *"Traditional edit-distance comparison without any LLM."*
+
+**Score Range**: 0.0 to 1.0
+
+**Available Distance Measures**:
+
+| Measure | Description |
+|---|---|
+| **Levenshtein** (default) | Minimum edit operations (insert, delete, substitute) |
+| **Hamming** | Number of differing positions (same-length strings) |
+| **Jaro** | Matching characters and transpositions |
+| **Jaro-Winkler** | Jaro + prefix bonus for common beginnings |
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Non-LLM (deterministic)
+
+---
+
+### 8.5 BLEU Score
+
+> *"N-gram precision for machine-translation-style evaluation."*
+
+**Score Range**: 0.0 to 1.0
+
+**Algorithm**:
+
+```
+1. Compute modified n-gram precision for n = 1, 2, 3, 4
+   (clipped counts — each reference n-gram used at most once)
+2. Compute brevity penalty: BP = exp(1 - ref_len/response_len) if response < reference
+3. BLEU = BP × exp(weighted average of log precisions)
+```
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Non-LLM (statistical, deterministic)
+
+**Limitation**: Doesn't understand meaning — "The cat sat on the mat" and "The mat sat on the cat" score similarly.
+
+---
+
+### 8.6 ROUGE Score
+
+> *"Recall-oriented n-gram evaluation — the standard for summarization."*
+
+**Score Range**: 0.0 to 1.0
+
+**Variants**:
+
+| Variant | What It Measures |
+|---|---|
+| **ROUGE-1** | Unigram overlap |
+| **ROUGE-L** (default) | Longest Common Subsequence (LCS) |
+
+**Modes**: `f1measure` (default), `precision`, `recall`
+
+**Formula (ROUGE-L)**:
+
+$$R = \frac{|LCS|}{|\text{reference}|} \qquad P = \frac{|LCS|}{|\text{response}|} \qquad F1 = \frac{2PR}{P + R}$$
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Non-LLM (statistical, deterministic)
+
+---
+
+### 8.7 CHRF Score
+
+> *"Character-level F-score — robust to morphological variation."*
+
+**Score Range**: 0.0 to 1.0
+
+**Algorithm**: Computes character-level n-gram precision and recall, then calculates F-score. Better than BLEU for morphologically rich languages (German, Finnish, etc.).
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Non-LLM (statistical, deterministic)
+
+---
+
+### 8.8 Exact Match
+
+> *"Does the response exactly equal the reference?"*
+
+**Score**: Binary — 1 if `response == reference`, else 0.
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Non-LLM (literal comparison)
+
+---
+
+### 8.9 String Presence
+
+> *"Does the response contain the reference string?"*
+
+**Score**: Binary — 1 if `reference in response`, else 0.
+
+**Required Columns**: `response`, `reference`
+
+**Type**: Non-LLM (substring check)
+
+**Use case**: Verifying that a specific keyword, entity, or phrase appears in the output.
 
 ---
 
@@ -565,7 +884,22 @@ Measures whether the agent stays on-topic throughout a multi-turn conversation w
 
 ### 9.1 Aspect Critic
 
-A **single-aspect binary judge** — evaluates whether a response meets a specific criterion.
+> *"A single-aspect binary judge — does the response meet this one criterion?"*
+
+**Score**: Binary (0 or 1)
+
+**Algorithm**:
+
+```
+1. Construct prompt with the user-defined aspect definition
+2. Ask LLM: "Does this response align with the criterion: {definition}?"
+3. Repeat 3 times (majority vote for robustness)
+4. Return majority verdict (0 or 1)
+```
+
+**Required Columns**: `user_input`, `response` (optional: `retrieved_contexts`, `reference`)
+
+**Type**: LLM-based (3 LLM calls with majority vote)
 
 ```python
 from ragas.metrics import AspectCritic
@@ -575,26 +909,176 @@ politeness = AspectCritic(
     definition="Is the response polite and professional?",
     llm=evaluator_llm,
 )
+
+conciseness = AspectCritic(
+    name="conciseness",
+    definition="Is the response concise without unnecessary verbosity?",
+    llm=evaluator_llm,
+)
 ```
 
-### 9.2 Simple Criteria Scoring
+**Use case**: Quick custom binary checks — safety, tone, format compliance, etc.
 
-Like Aspect Critic but returns a **numeric score** instead of binary.
+---
 
-### 9.3 Rubrics-Based Scoring
+### 9.2 Simple Criteria Score
 
-Evaluates against a **multi-level rubric** (e.g., 1-5 scale with descriptions for each level).
+> *"Flexible scoring on a custom integer or categorical scale."*
+
+**Score**: Integer or categorical (configurable)
+
+**Algorithm**: Similar to Aspect Critic but returns a score from a range instead of binary. The LLM is asked to score and provide reasoning.
+
+**Required Columns**: `user_input`, `response`
+
+**Type**: LLM-based
+
+**Use case**: When you need more granularity than binary but don't want a full rubric.
+
+---
+
+### 9.3 Rubrics-Based Scoring (Domain-Specific Rubrics)
+
+> *"Consistent multi-level rubric applied to all samples."*
+
+**Score**: 1–5 (default) with descriptive level definitions
+
+**Default Rubric**:
+
+| Score | Meaning |
+|---|---|
+| 1 | Poor — Completely misses the mark |
+| 2 | Below Average — Partially addresses the task |
+| 3 | Average — Adequately addresses the task |
+| 4 | Good — Well addresses with minor gaps |
+| 5 | Excellent — Fully addresses with no gaps |
+
+**Algorithm**:
+
+```
+1. Present the rubric + sample to LLM
+2. LLM assigns a score (1-5) with reasoning
+3. Return score + explanation
+```
+
+**Required Columns**: `user_input`, `response` (optional: `retrieved_contexts`, `reference`)
+
+**Type**: LLM-based
+
+**Use case**: Standardized quality assessment across a dataset with consistent criteria.
+
+---
 
 ### 9.4 Instance-Specific Rubrics
 
-Each sample carries its own rubric in the `rubric` field — useful when different queries need different scoring criteria.
+> *"Each sample gets its own custom rubric."*
 
-### 9.5 SQL Metrics
+**Score**: 1–5 (per-sample rubric)
 
-| Metric | Method |
-|---|---|
-| **Execution-Based Datacompy Score** | Execute both queries, compare result DataFrames |
-| **SQL Query Semantic Equivalence** | LLM judges whether two SQL queries are logically equivalent |
+**Key difference from 9.3**: The rubric is read from the `rubric` field of each `SingleTurnSample`, allowing different scoring criteria per question.
+
+**Required Columns**: `rubrics`, `user_input`, `response`
+
+**Type**: LLM-based
+
+**Use case**: Evaluating diverse question types where a single rubric doesn't fit all — e.g., coding questions vs. creative writing vs. factual recall.
+
+---
+
+### 9.5 Summarization Score
+
+> *"How good is this summary? Balancing information coverage with conciseness."*
+
+**Score Range**: 0.0 to 1.0
+
+**Formula**:
+
+$$\text{Summarization Score} = c \cdot QA_{\text{score}} + (1 - c) \cdot \text{Conciseness}$$
+
+where $c$ = coefficient (default: 0.5).
+
+**Sub-scores**:
+
+$$QA_{\text{score}} = \frac{|\text{questions answered correctly from summary}|}{|\text{total questions generated from context}|}$$
+
+$$\text{Conciseness} = 1 - \frac{\min(|\text{summary}|,\ |\text{context}|)}{|\text{context}|}$$
+
+**Algorithm**:
+
+```
+1. Extract key phrases from the source context
+2. Generate questions from those key phrases
+3. Try to answer each question using ONLY the summary
+4. QA Score = fraction of questions answerable from summary
+5. Conciseness = how much shorter is the summary vs. source
+6. Final = weighted combination
+```
+
+**Required Columns**: `response` (the summary), `reference_contexts` (source text)
+
+**Type**: LLM-based (keyphrase extraction + QA generation)
+
+---
+
+### 9.6 SQL Metrics
+
+#### DataCompy Score (Execution-Based)
+
+> *"Run both SQL queries and compare the result tables."*
+
+**Score Range**: 0.0 to 1.0
+
+**Modes**: `rows` (row-wise comparison) or `columns`
+
+**Formulas (Row mode)**:
+
+$$\text{Precision} = \frac{|\text{matching rows}|}{|\text{response rows}|} \qquad \text{Recall} = \frac{|\text{matching rows}|}{|\text{reference rows}|}$$
+
+**Required Columns**: `response` (CSV output), `reference` (CSV output)
+
+**Type**: Non-LLM (execution + DataFrame comparison using `datacompy` library)
+
+#### LLM SQL Equivalence
+
+> *"Are these two SQL queries logically equivalent?"*
+
+**Score**: Binary (0 or 1)
+
+**Algorithm**: LLM analyzes both SQL queries + the database schema and determines if they would produce identical results for all possible inputs.
+
+**Required Columns**: `response`, `reference`, `reference_contexts` (database schema)
+
+**Type**: LLM-based
+
+---
+
+### 9.7 NVIDIA Metrics
+
+Three metrics following NVIDIA's evaluation methodology:
+
+#### Answer Accuracy
+
+> *"Does the response match the reference ground truth?"*
+
+**Score Range**: 0.0 to 1.0
+
+**Algorithm**: Uses **dual independent LLM judges** for robustness. Each judge rates on a 3-point scale (0 = no match, 2 = partial, 4 = exact match). Final score = average of both judges, normalized to [0, 1].
+
+**Required Columns**: `user_input`, `response`, `reference`
+
+#### Context Relevance
+
+> *"Are the retrieved contexts relevant to the query?"*
+
+**Required Columns**: `user_input`, `retrieved_contexts`
+
+#### Response Groundedness
+
+> *"Is the response grounded in the provided context?"*
+
+**Required Columns**: `response`, `retrieved_contexts`
+
+All NVIDIA metrics are LLM-based and follow NVIDIA's evaluation prompt templates.
 
 ---
 
@@ -1319,17 +1803,32 @@ from ragas import evaluate, aevaluate
 from ragas import experiment, Dataset
 
 # Metrics — RAG
-from ragas.metrics import Faithfulness, LLMContextRecall, LLMContextPrecisionWithReference
-from ragas.metrics import ResponseRelevancy, FactualCorrectness
+from ragas.metrics import Faithfulness, FaithfulnesswithHHEM
+from ragas.metrics import LLMContextRecall, NonLLMContextRecall, IDBasedContextRecall
+from ragas.metrics import LLMContextPrecisionWithReference, LLMContextPrecisionWithoutReference
+from ragas.metrics import ResponseRelevancy, ContextEntityRecall, NoiseSensitivity
+from ragas.metrics import MultiModalFaithfulness, MultiModalRelevance
+
+# Metrics — NL Comparison
+from ragas.metrics import FactualCorrectness, AnswerCorrectness
+from ragas.metrics import SemanticSimilarity, NonLLMStringSimilarity
+from ragas.metrics import BleuScore, RougeScore, ChrfScore, ExactMatch, StringPresence
 
 # Metrics — Agent
-from ragas.metrics import ToolCallAccuracy, AgentGoalAccuracy
+from ragas.metrics import ToolCallAccuracy, ToolCallF1, AgentGoalAccuracy, TopicAdherenceScore
 
-# Metrics — General
-from ragas.metrics import AspectCritic, SemanticSimilarity
+# Metrics — General Purpose
+from ragas.metrics import AspectCritic, SimpleCriteriaScore, RubricsScore, InstanceRubrics
+from ragas.metrics import SummarizationScore
+
+# Metrics — SQL
+from ragas.metrics import DataCompyScore, LLMSQLEquivalence
+
+# Metrics — NVIDIA
+from ragas.metrics import AnswerAccuracy, ContextRelevance, ResponseGroundedness
 
 # Metrics — Custom
-from ragas.metrics import discrete_metric, numeric_metric, MetricResult
+from ragas.metrics import discrete_metric, numeric_metric, ranking_metric, MetricResult
 
 # Test Generation
 from ragas.testset import TestsetGenerator
@@ -1337,14 +1836,36 @@ from ragas.testset import TestsetGenerator
 
 ### Metric → Required Columns Quick Map
 
-| Metric | `user_input` | `response` | `retrieved_contexts` | `reference` | `reference_contexts` |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Faithfulness | ✓ | ✓ | ✓ | | |
-| Context Precision (w/ ref) | ✓ | | ✓ | ✓ | |
-| Context Recall | ✓ | | ✓ | ✓ | |
-| Answer Relevancy | ✓ | ✓ | ○ | | |
-| Factual Correctness | | ✓ | | ✓ | |
-| Semantic Similarity | | ✓ | | ✓ | |
+| Metric | `user_input` | `response` | `retrieved_contexts` | `reference` | `reference_contexts` | Other |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Faithfulness | ✓ | ✓ | ✓ | | | |
+| Context Precision (w/ ref) | ✓ | | ✓ | ✓ | | |
+| Context Precision (w/o ref) | ✓ | ✓ | ✓ | | | |
+| Context Recall | ✓ | | ✓ | ✓ | | |
+| Context Entities Recall | | | ✓ | ✓ | | |
+| Noise Sensitivity | ✓ | ✓ | ✓ | ✓ | | |
+| Answer Relevancy | ✓ | ✓ | ○ | | | |
+| Factual Correctness | | ✓ | | ✓ | | |
+| Answer Correctness | ✓ | ✓ | | ✓ | | |
+| Semantic Similarity | | ✓ | | ✓ | | |
+| Non-LLM String Similarity | | ✓ | | ✓ | | |
+| BLEU / ROUGE / CHRF | | ✓ | | ✓ | | |
+| Exact Match / String Presence | | ✓ | | ✓ | | |
+| Summarization Score | | ✓ | | | ✓ | |
+| Aspect Critic | ✓ | ✓ | ○ | ○ | | |
+| Rubrics Score | ✓ | ✓ | ○ | ○ | | |
+| Instance Rubrics | ✓ | ✓ | | | | `rubrics` |
+| Tool Call Accuracy | | | | | | `user_input` (multi), `ref_tool_calls` |
+| Tool Call F1 | | | | | | `user_input` (multi), `ref_tool_calls` |
+| Agent Goal Accuracy | | | | | | `user_input` (multi), `reference` (opt) |
+| Topic Adherence | | | | | | `user_input` (multi), `ref_topics` |
+| DataCompy Score | | ✓ | | ✓ | | |
+| LLM SQL Equivalence | | ✓ | | ✓ | ✓ | |
+| NVIDIA Answer Accuracy | ✓ | ✓ | | ✓ | | |
+| NVIDIA Context Relevance | ✓ | | ✓ | | | |
+| NVIDIA Response Groundedness | | ✓ | ✓ | | | |
+| Multimodal Faithfulness | | ✓ | ✓ | | | |
+| Multimodal Relevance | ✓ | ✓ | ✓ | | | |
 
 ✓ = required, ○ = optional
 
@@ -1358,6 +1879,18 @@ $$\text{Context Recall} = \frac{\text{Attributed Reference Claims}}{\text{Total 
 
 $$\text{Answer Relevancy} = \frac{1}{N}\sum_{i=1}^{N} \cos(E_{g_i}, E_o)$$
 
+$$\text{Factual Correctness (F1)} = \frac{2 \cdot P \cdot R}{P + R} \quad \text{where } P = \frac{TP}{TP+FP},\ R = \frac{TP}{TP+FN}$$
+
+$$\text{Answer Correctness} = w \cdot F1_{\text{factual}} + (1-w) \cdot \text{SemanticSim}$$
+
+$$\text{Summarization} = c \cdot QA_{\text{score}} + (1-c) \cdot \text{Conciseness}$$
+
+$$\text{Context Entity Recall} = \frac{|CE_{\text{retrieved}} \cap CE_{\text{reference}}|}{|CE_{\text{reference}}|}$$
+
+$$\text{Noise Sensitivity} = \frac{\text{Incorrect Claims}}{\text{Total Claims}} \quad \text{(lower is better)}$$
+
+$$\text{Tool Call F1} = \frac{2 \cdot P_{\text{tools}} \cdot R_{\text{tools}}}{P_{\text{tools}} + R_{\text{tools}}}$$
+
 ### Decision Tree: Which Metric Do I Need?
 
 ```
@@ -1365,22 +1898,45 @@ Is the problem with RETRIEVAL or GENERATION?
 
 RETRIEVAL:
   ├── Are relevant docs being found?        → Context Recall
+  ├── Are key entities being captured?       → Context Entities Recall
   ├── Are irrelevant docs sneaking in?       → Context Precision
-  └── Is ranking order wrong?                → Context Precision
+  ├── Is ranking order wrong?                → Context Precision
+  ├── Is noise hurting answers?              → Noise Sensitivity
+  └── Is context even relevant? (NVIDIA)     → Context Relevance
 
 GENERATION:
-  ├── Is the answer hallucinating?           → Faithfulness
+  ├── Is the answer hallucinating?           → Faithfulness / Response Groundedness
   ├── Is the answer off-topic?               → Answer Relevancy
   ├── Is the answer factually wrong?         → Factual Correctness
-  └── Is the answer semantically different?  → Semantic Similarity
+  ├── Does it match ground truth?            → Answer Correctness / Answer Accuracy
+  ├── Is the meaning similar?                → Semantic Similarity
+  └── Is the summary good?                   → Summarization Score
 
 AGENT:
   ├── Are correct tools being called?        → Tool Call Accuracy / F1
   ├── Is the goal being achieved?            → Agent Goal Accuracy
   └── Is the agent staying on topic?         → Topic Adherence
 
+SQL:
+  ├── Do query results match?                → DataCompy Score
+  └── Are queries logically equivalent?      → LLM SQL Equivalence
+
+MULTIMODAL:
+  ├── Faithful to images + text?             → Multimodal Faithfulness
+  └── Relevant to images + text?             → Multimodal Relevance
+
 CUSTOM:
-  └── Define your own                        → Aspect Critic / Rubrics
+  ├── Binary pass/fail check                 → Aspect Critic
+  ├── Numeric scale (same rubric)            → Rubrics Score / Simple Criteria
+  └── Per-sample rubric                      → Instance-Specific Rubrics
+
+TRADITIONAL (no LLM needed):
+  ├── N-gram precision                       → BLEU Score
+  ├── N-gram recall                          → ROUGE Score
+  ├── Character-level (multilingual)         → CHRF Score
+  ├── Edit distance                          → Non-LLM String Similarity
+  ├── Exact string match                     → Exact Match
+  └── Substring presence                     → String Presence
 ```
 
 ---
