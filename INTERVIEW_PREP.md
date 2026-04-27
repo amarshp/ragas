@@ -163,11 +163,35 @@ where $E_{g_i}$ = embedding of generated question $i$, $E_o$ = embedding of orig
 
 ### 5. Factual Correctness
 
-- Decomposes both response and reference into claims
-- Uses NLI to classify: TP (response claim matches reference), FP (doesn't), FN (reference claim missing from response)
 - Returns precision, recall, or F1
 - **Distinct from Faithfulness**: Faithfulness checks against *context*, Factual Correctness checks against *reference*
 - Requires reference → offline only
+
+**How TP/FP/FN are calculated** (4 LLM calls total, 2 decomposition + 2 NLI):
+
+**Step 1 — Extract claims from both sides** (2 LLM calls):
+- Decompose the **response** into atomic claims
+- Decompose the **reference** into atomic claims
+
+**Step 2 — Two NLI passes** (2 batched LLM calls):
+- **Pass A**: premise = full reference text → judge every response claim → gives TP and FP
+- **Pass B**: premise = full response text → judge every reference claim → gives FN
+
+| Symbol | Meaning | Source |
+|---|---|---|
+| **TP** | Response claims *supported* by the reference — "correctly stated" | Pass A |
+| **FP** | Response claims *not supported* by the reference — "hallucinated or wrong" | Pass A |
+| **FN** | Reference claims *not supported* by the response — "missed or contradicted" | Pass B |
+
+**Key detail**: Not pairwise claim-vs-claim. Each pass takes the entire opposing text as one premise and judges all claims in a single batched call. No TN — "things neither said" is infinite and irrelevant.
+
+**Score formulas**:
+
+$$\text{Precision} = \frac{TP}{TP + FP}$$ — of what the response claimed, how much was correct?
+
+$$\text{Recall} = \frac{TP}{TP + FN}$$ — of what the reference said, how much did the response cover?
+
+$$F1 = \frac{2 \cdot P \cdot R}{P + R}$$ (default mode)
 
 ### 6. Answer Correctness
 
