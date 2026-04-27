@@ -21,11 +21,15 @@
 13. [Prompt Engineering in RAGAS](#13-prompt-engineering-in-ragas)
 14. [Integrations Ecosystem](#14-integrations-ecosystem)
 15. [Feedback Loops & Continuous Improvement](#15-feedback-loops--continuous-improvement)
-16. [Code Walkthrough — Key Source Modules](#16-code-walkthrough--key-source-modules)
-17. [Hands-On: End-to-End RAG Evaluation](#17-hands-on-end-to-end-rag-evaluation)
-18. [Hands-On: Agent Evaluation](#18-hands-on-agent-evaluation)
-19. [Interview Questions & Answers](#19-interview-questions--answers)
-20. [Quick Reference Cheat Sheet](#20-quick-reference-cheat-sheet)
+16. [Limitations, Criticisms & Where RAGAS Breaks Down](#16-limitations-criticisms--where-ragas-breaks-down)
+17. [Cost, Latency & Scaling Math](#17-cost-latency--scaling-math)
+18. [Meta-Evaluation — How Do You Trust Your Evaluator?](#18-meta-evaluation--how-do-you-trust-your-evaluator)
+19. [Production vs. Offline: Reference-Free & Reference-Required Metrics](#19-production-vs-offline-reference-free--reference-required-metrics)
+20. [Code Walkthrough — Key Source Modules](#20-code-walkthrough--key-source-modules)
+21. [Hands-On: End-to-End RAG Evaluation](#21-hands-on-end-to-end-rag-evaluation)
+22. [Hands-On: Agent Evaluation](#22-hands-on-agent-evaluation)
+23. [Interview Questions & Answers](#23-interview-questions--answers)
+24. [Quick Reference Cheat Sheet](#24-quick-reference-cheat-sheet)
 
 ---
 
@@ -1212,6 +1216,10 @@ dataset = Dataset(name="test_data", backend="local/csv", root_dir=".")
 results = asyncio.run(run_experiment.arun(dataset, name="v1_baseline"))
 ```
 
+### Experiment Versioning
+
+The `version_experiment` utility creates versioned snapshots of experiments for reproducibility. When iterating on prompts or models, wrap your experiment with `version_experiment` to auto-tag results with git commit, timestamp, and configuration metadata — enabling you to trace any result back to the exact code that produced it.
+
 ### Experiment Storage
 
 Results auto-save to CSV:
@@ -1419,7 +1427,259 @@ scorer.statement_generator_prompt = await scorer.statement_generator_prompt.adap
 
 ---
 
-## 16. Code Walkthrough — Key Source Modules
+## 16. Limitations, Criticisms & Where RAGAS Breaks Down
+
+> **Why this matters**: Senior interviewers will probe whether you understand the failure modes, not just the happy path. Knowing where a tool breaks is more valuable than knowing how it works.
+
+### 16.1 The Circularity Problem (LLM Evaluating LLM)
+
+RAGAS LLM-based metrics use an LLM to judge another LLM's output. This creates a fundamental circularity:
+
+- If the evaluator LLM has the **same blind spots** as the system LLM, it will rate hallucinations as faithful
+- GPT-4 evaluating GPT-4 outputs can exhibit **self-preference bias** — it tends to rate its own style of output higher
+- Different evaluator models produce **different scores** for the same sample — there is no ground truth
+
+**Mitigation strategies**:
+1. Use a **different model family** as evaluator (e.g., Claude evaluating GPT-4 outputs)
+2. **Calibrate** against human annotations on a held-out set (see Section 18)
+3. Use **non-LLM metrics** (BLEU, ROUGE, Exact Match) as a cross-check
+4. For Faithfulness specifically, consider `FaithfulnesswithHHEM` (T5-based, no LLM circularity)
+
+### 16.2 Faithfulness Can Be Gamed
+
+A response that **only quotes the context verbatim** scores 1.0 on Faithfulness — every claim is trivially supported. But this response may be:
+- Useless (doesn't actually answer the question)
+- Incomplete (misses key synthesis)
+- Poorly structured
+
+**Faithfulness measures groundedness, not quality.** Always pair it with Answer Relevancy or Factual Correctness to get a complete picture.
+
+| Response Type | Faithfulness | Answer Relevancy | Actual Quality |
+|---|---|---|---|
+| Parrot (copies context) | 1.0 | Low | Bad |
+| Hallucinated but fluent | Low | High | Bad |
+| Well-grounded + relevant | High | High | Good |
+
+### 16.3 Answer Relevancy Is Reference-Free — A Double-Edged Sword
+
+Answer Relevancy doesn't need a reference answer, which is great for production. But it **cannot detect factually wrong answers that sound relevant**:
+
+- Q: "When was Python created?" → A: "Python was created in 2005" → Relevancy: **High** (the response answers the question) → Factual Correctness: **0** (wrong year)
+
+Answer Relevancy only checks if the response *addresses* the question, not if it's *correct*. For correctness, you need Factual Correctness or Answer Correctness (both require a reference).
+
+### 16.4 Context Recall's Reference Dependency
+
+Context Recall *always* requires a reference answer. In production, you rarely have reference answers for every query. This means:
+
+- Context Recall is an **offline-only metric** — usable in test suites, not in live monitoring
+- For production retrieval monitoring, you're limited to Context Precision (without reference variant) or NVIDIA's Context Relevance
+- Alternatively, use human spot-checks or user click-through data as proxy signals
+
+### 16.5 Non-Determinism Makes Benchmarking Hard
+
+LLM-based metrics are inherently non-deterministic:
+- Running the same evaluation twice can yield different scores
+- Temperature, model version updates, and API changes all introduce drift
+- This makes it hard to say "this prompt change improved faithfulness by 0.03" with confidence
+
+**Mitigation**: Run evaluations multiple times and report **confidence intervals**, not single numbers. Use `RunConfig` with a fixed seed where possible.
+
+### 16.6 Domain Sensitivity
+
+Default RAGAS prompts are tuned for general knowledge. In specialized domains (legal, medical, financial), the LLM evaluator may:
+- Misclassify domain-specific jargon as unsupported claims
+- Fail to recognize valid paraphrasing of technical concepts
+- Score correct domain answers as low-faithfulness because the wording differs from context
+
+**Fix**: Always **adapt prompts** (Section 13) and **calibrate against domain expert annotations** before trusting scores.
+
+---
+
+## 17. Cost, Latency & Scaling Math
+
+> **Why this matters**: System design interviews will ask "how would you evaluate 10,000 samples?" You need to know the call math.
+
+### 17.1 LLM Calls Per Metric Per Sample
+
+| Metric | LLM Calls per Sample | Notes |
+|---|---|---|
+| **Faithfulness** | **2** | 1 for statement extraction + 1 for NLI verification |
+| **Context Precision** | **K** | 1 call per retrieved chunk (K chunks) |
+| **Context Recall** | **1** | 1 call classifying all reference claims |
+| **Answer Relevancy** | **N + embed** | N calls to generate questions (default N=3) + 1 embedding call |
+| **Factual Correctness** | **3** | 1 for response claims + 1 for reference claims + 1 for NLI |
+| **Answer Correctness** | **3 + embed** | Factual Correctness calls + 1 embedding call |
+| **Aspect Critic** | **3** | 3 calls (majority vote) |
+| **Summarization Score** | **3+** | Keyphrase extraction + question gen + QA answering |
+| **Context Entities Recall** | **2** | 1 entity extraction per source (reference + context) |
+| **Agent Goal Accuracy** | **1** | 1 call to judge goal completion |
+| **BLEU / ROUGE / Exact Match** | **0** | No LLM calls — free |
+| **Semantic Similarity** | **0 + embed** | Embedding call only — cheap |
+
+### 17.2 Scaling Example
+
+**Scenario**: Evaluate 1,000 samples with Faithfulness + Context Recall + Answer Relevancy
+
+```
+Faithfulness:      1,000 × 2 calls  = 2,000 LLM calls
+Context Recall:    1,000 × 1 call   = 1,000 LLM calls
+Answer Relevancy:  1,000 × 3 calls  = 3,000 LLM calls + 1,000 embedding calls
+                                     ─────────────────
+Total:                                6,000 LLM calls + 1,000 embed calls
+```
+
+**At GPT-4o pricing** (~$2.50/1M input tokens, ~$10/1M output tokens):
+- Average ~500 input tokens + ~200 output tokens per call
+- Cost ≈ 6,000 × ($0.00125 + $0.002) = **~$19** for LLM calls
+- Embedding calls are negligible (~$0.02/1M tokens)
+- **Total ≈ $20 for 1,000 samples with 3 metrics**
+
+**Latency** (with `batch_size=10`, parallel execution):
+- ~600 batches × ~2s per batch ≈ **~20 minutes** with rate limiting
+- Without batching limits: ~5 minutes
+
+### 17.3 When to Use Non-LLM Metrics
+
+| Scale | Recommendation |
+|---|---|
+| **< 100 samples** | Use all LLM-based metrics freely |
+| **100–1,000 samples** | LLM metrics feasible (~$5–$20). Use for key metrics, non-LLM for secondary checks |
+| **1,000–10,000 samples** | Mix LLM + non-LLM. Use Faithfulness on full set, ROUGE/BLEU as cheap filters |
+| **> 10,000 samples** | Sample 500–1,000 for LLM metrics. Use non-LLM (ROUGE, Semantic Similarity) at full scale |
+| **Real-time / per-request** | Non-LLM only (Exact Match, String Presence) or pre-computed embeddings |
+
+### 17.4 Cost Reduction Strategies
+
+1. **Use cheaper models**: GPT-4o-mini or Claude Haiku as evaluator (verify correlation first)
+2. **Use HHEM for faithfulness**: Zero LLM cost, deterministic
+3. **Batch evaluate**: Run weekly instead of per-commit
+4. **Tiered evaluation**: BLEU/ROUGE as CI gate → LLM metrics in nightly runs
+5. **Cache results**: RAGAS has `DiskCacheBackend` — identical inputs skip LLM calls
+
+---
+
+## 18. Meta-Evaluation — How Do You Trust Your Evaluator?
+
+> **Why this matters**: This question is entirely missing from most RAGAS tutorials. Interviewers will ask: "How do you know your evaluation metrics are actually correct?"
+
+### 18.1 The Problem
+
+If Faithfulness gives a sample a score of 0.8, how do you know that's right? You're trusting an LLM to judge correctness — but the LLM itself can be wrong.
+
+### 18.2 The Solution: Human-LLM Agreement Rate
+
+**Step 1**: Take a **random sample** (50–100 samples is usually sufficient)
+
+**Step 2**: Have **human annotators** score the same samples on the same criteria
+
+**Step 3**: Compute **correlation** between LLM scores and human scores:
+
+| Correlation | Interpretation | Action |
+|---|---|---|
+| **> 0.8** | Strong agreement | Trust the metric for this domain |
+| **0.6 – 0.8** | Moderate agreement | Usable with caution; consider prompt tuning |
+| **< 0.6** | Weak agreement | Don't trust. Switch evaluator model, tune prompts, or fall back to non-LLM metrics |
+
+**Step 4**: If agreement is low, try:
+1. Switch evaluator model (e.g., GPT-4o → Claude Opus)
+2. Adapt metric prompts with domain-specific few-shot examples
+3. Fall back to `FaithfulnesswithHHEM` or non-LLM metrics
+4. Use Aspect Critic with a very precise, domain-specific definition
+
+### 18.3 Inter-Annotator Agreement
+
+Before blaming the LLM, check if **humans agree with each other**:
+- Compute Cohen's Kappa or Krippendorff's Alpha between human annotators
+- If humans disagree (κ < 0.6), the task is inherently subjective — no metric (LLM or otherwise) will be reliable
+- In that case, consider **redefining the metric** to target a more objective aspect
+
+### 18.4 Practical Workflow
+
+```
+1. Select 50-100 samples across difficulty levels
+2. Run RAGAS metrics on them
+3. Have 2+ human annotators score independently
+4. Compute:
+   - Human-LLM Pearson/Spearman correlation
+   - Human inter-annotator agreement (Cohen's κ)
+5. If LLM correlation ≥ 0.8 AND κ ≥ 0.7 → proceed with confidence
+6. If not → diagnose and fix before scaling evaluation
+```
+
+---
+
+## 19. Production vs. Offline: Reference-Free & Reference-Required Metrics
+
+> **Why this matters**: In production, you rarely have reference answers. Knowing which metrics work without them determines what you can actually monitor.
+
+### 19.1 The Reference Availability Spectrum
+
+| Setting | Reference Available? | Typical Use |
+|---|---|---|
+| **Offline test suite** | Yes (curated dataset) | Pre-deployment validation |
+| **CI/CD pipeline** | Yes (regression dataset) | Automated quality gates |
+| **Shadow evaluation** | Sometimes (A/B test) | Comparing two systems |
+| **Production monitoring** | **No** | Live quality tracking |
+| **User feedback loop** | Partial (thumbs up/down) | Noisy signal collection |
+
+### 19.2 Reference-Free Metrics (Usable in Production)
+
+These metrics evaluate quality **without needing a ground truth answer**:
+
+| Metric | What It Measures | Cost |
+|---|---|---|
+| **Faithfulness** | Is response grounded in retrieved context? | 2 LLM calls |
+| **Answer Relevancy** | Does response address the question? | N LLM + 1 embed |
+| **Context Precision (w/o ref)** | Are retrieved chunks relevant to response? | K LLM calls |
+| **Aspect Critic** | Custom binary check (tone, safety, format) | 3 LLM calls |
+| **NVIDIA Context Relevance** | Is context relevant to query? | 1 LLM call |
+| **NVIDIA Response Groundedness** | Is response grounded in context? | 1 LLM call |
+| **Multimodal Faithfulness/Relevance** | Multimodal groundedness/relevance | LLM calls |
+
+### 19.3 Reference-Required Metrics (Offline Only)
+
+These metrics **require a ground truth answer or reference contexts**:
+
+| Metric | Reference Type Needed |
+|---|---|
+| **Context Recall** | Reference answer |
+| **Context Precision (w/ ref)** | Reference answer |
+| **Context Entities Recall** | Reference answer |
+| **Factual Correctness** | Reference answer |
+| **Answer Correctness** | Reference answer |
+| **Semantic Similarity** | Reference answer |
+| **BLEU / ROUGE / CHRF** | Reference answer |
+| **Exact Match / String Presence** | Reference answer |
+| **Noise Sensitivity** | Reference answer |
+| **Summarization Score** | Reference contexts (source text) |
+| **DataCompy Score** | Reference SQL output |
+| **LLM SQL Equivalence** | Reference query + schema |
+| **NVIDIA Answer Accuracy** | Reference answer |
+| **Tool Call Accuracy / F1** | Reference tool calls |
+| **Agent Goal Accuracy (w/ ref)** | Reference outcome |
+
+**Exception**: `AgentGoalAccuracyWithoutReference` works without a reference by inferring the goal from conversation context.
+
+### 19.4 Recommended Production Monitoring Stack
+
+```
+PRODUCTION (no reference):
+  ├── Faithfulness          → Catch hallucinations in real-time
+  ├── Answer Relevancy      → Catch off-topic responses
+  ├── Aspect Critic (safety) → Catch harmful/unsafe outputs
+  └── Sample 1-5% for human review → Calibrate metrics periodically
+
+OFFLINE (with reference):
+  ├── Context Recall         → Retriever completeness
+  ├── Context Precision      → Retriever ranking quality
+  ├── Factual Correctness    → End-to-end accuracy
+  └── BLEU/ROUGE             → Cheap regression checks in CI
+```
+
+---
+
+## 20. Code Walkthrough — Key Source Modules
 
 ### `src/ragas/evaluation.py` — The `evaluate()` Function
 
@@ -1498,7 +1758,7 @@ ToolCall(name: str, args: dict)
 
 ---
 
-## 17. Hands-On: End-to-End RAG Evaluation
+## 21. Hands-On: End-to-End RAG Evaluation
 
 ### Complete Working Example
 
@@ -1551,7 +1811,7 @@ print(df[["faithfulness", "context_recall", "factual_correctness"]])
 
 ---
 
-## 18. Hands-On: Agent Evaluation
+## 22. Hands-On: Agent Evaluation
 
 ### Evaluating a Multi-Turn Agent
 
@@ -1588,7 +1848,7 @@ result = evaluate(
 
 ---
 
-## 19. Interview Questions & Answers
+## 23. Interview Questions & Answers
 
 ### Fundamentals
 
@@ -1786,7 +2046,36 @@ Customize when: dealing with rate limits, slow LLM endpoints, or needing determi
 
 ---
 
-## 20. Quick Reference Cheat Sheet
+**Q19: What are the main limitations of RAGAS? Where does it break down?**
+
+1. **Circularity**: LLM-based metrics use an LLM to judge an LLM — if the evaluator has the same blind spots, scores are meaningless. Mitigate by using a different model family as evaluator.
+2. **Faithfulness can be gamed**: A response that only parrots context verbatim scores 1.0 but may be useless. Always pair with Answer Relevancy.
+3. **Answer Relevancy can't detect factual errors**: It checks if the response *addresses* the question, not if it's *correct*. A confidently wrong answer scores high.
+4. **Reference dependency**: Context Recall, Factual Correctness, and most comparison metrics require ground truth — unavailable in production.
+5. **Non-determinism**: Same evaluation can yield different scores across runs, making small improvements hard to measure with confidence.
+6. **Domain sensitivity**: Default prompts are tuned for general knowledge; specialized domains need prompt adaptation and human calibration.
+
+---
+
+**Q20: How many LLM calls does evaluating 1,000 samples with Faithfulness + Context Recall + Answer Relevancy take?**
+
+Faithfulness: 2 calls/sample × 1,000 = 2,000. Context Recall: 1 call/sample × 1,000 = 1,000. Answer Relevancy: 3 calls/sample × 1,000 = 3,000 + 1,000 embedding calls. **Total: ~6,000 LLM calls + 1,000 embedding calls.** At GPT-4o pricing, approximately $20. At scale (>10K samples), use non-LLM metrics (BLEU, ROUGE) for full coverage and sample for LLM metrics.
+
+---
+
+**Q21: How do you validate that RAGAS metrics are trustworthy for your domain?**
+
+Meta-evaluation: Take 50–100 samples, have human annotators score them, then compute Pearson/Spearman correlation between human and RAGAS scores. If correlation > 0.8, trust the metric. If 0.6–0.8, tune prompts. Below 0.6, switch evaluator model or fall back to non-LLM metrics. Also check inter-annotator agreement (Cohen's κ) — if humans disagree, no metric will be reliable.
+
+---
+
+**Q22: Which RAGAS metrics can you use in production without reference answers?**
+
+Only reference-free metrics: **Faithfulness** (grounded in context?), **Answer Relevancy** (addresses the question?), **Context Precision without reference** (relevant chunks?), **Aspect Critic** (custom safety/tone checks), and NVIDIA's Context Relevance / Response Groundedness. All others (Context Recall, Factual Correctness, BLEU, etc.) require a reference and are offline-only.
+
+---
+
+## 24. Quick Reference Cheat Sheet
 
 ### Essential Imports
 
