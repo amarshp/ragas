@@ -102,6 +102,7 @@ $$\text{Context Recall} = \frac{\text{reference claims attributable to retrieved
 - Answer-oriented — measures coverage of the *reference answer*, not retrieval of question-relevant docs
 - Always requires a reference → **offline only**, never in production
 - Only two numbers matter: claims covered and total claims. Number of chunks, which chunk, relevance to question — all distractors
+- That's why it's more useful than standard Recall@K for RAG — you don't care if the retriever found "relevant documents" in the abstract. You care if it found the documents that contain the information needed to produce the correct answer.
 - Costs 1 LLM call per sample
 
 ---
