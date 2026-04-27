@@ -400,6 +400,16 @@ Score = 1/2 = **0.5**
 
 **Score Range**: 0.0 to 1.0
 
+**How Context Precision differs from standard Precision@K**:
+
+| | Standard Precision@K | Context Precision@K (RAGAS) |
+|---|---|---|
+| **Formula** | $\frac{\text{relevant items in top K}}{K}$ | Weighted average precision (see below) |
+| **"Relevant" means** | Useful for the *question* | Useful in arriving at the *answer* |
+| **Ranking reward** | No — flat ratio | Yes — relevant chunks ranked earlier contribute more |
+
+Standard Precision@K treats every position equally; RAGAS Context Precision uses **Average Precision**, so burying a useful chunk at rank 5 scores lower than surfacing it at rank 1.
+
 **Formula (Average Precision@K)**:
 
 $$\text{Context Precision@K} = \frac{\sum_{k=1}^{K} \left( \text{Precision@k} \times v_k \right)}{|\text{relevant items in top K}|}$$
