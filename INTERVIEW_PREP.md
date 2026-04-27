@@ -67,10 +67,20 @@ for i, verdict in enumerate(verdicts):
 score = numerator / (cumsum + epsilon)
 ```
 
+**What the LLM receives**: `question + chunk + answer` → *"Was this chunk useful in arriving at the given answer?"*
+
+**Two variants — what "answer" means differs**:
+
+| Variant | "answer" passed to LLM | Requires | Use when |
+|---|---|---|---|
+| `ContextPrecision` (default) | **Reference** (ground truth) | reference → offline only | Evaluating if retriever finds chunks needed for the *correct* answer |
+| `ContextUtilization` (WithoutReference) | **Generated response** | no reference → production-safe | Evaluating if retriever finds chunks the model *actually used* |
+
+**Caveat on `ContextUtilization`**: if the model is also bad, it can mask retriever problems — a bad model using bad chunks scores well. Prefer `ContextPrecision` offline; use `ContextUtilization` in production.
+
 **Key interview points**:
 - Answer-oriented, not question-oriented
 - Order matters — burying a relevant chunk at rank 5 hurts the score
-- Has a reference-free variant (`WithoutReference`) → usable in production
 - Costs K LLM calls (one per chunk)
 
 ---
