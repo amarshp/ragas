@@ -451,6 +451,17 @@ Compute average precision:
 
 **Score Range**: 0.0 to 1.0
 
+**How Context Recall differs from standard Recall@K**:
+
+| | Standard Recall@K | Context Recall (RAGAS) |
+|---|---|---|
+| **Formula** | $\frac{\text{relevant docs retrieved in top K}}{\text{total relevant docs in corpus}}$ | $\frac{\text{reference claims attributable to retrieved context}}{\text{total reference claims}}$ |
+| **"Relevant" means** | Document is useful for the *question* | Reference answer claim can be attributed to the context |
+| **Unit of measurement** | Whole documents | Individual claims from the reference answer |
+
+Standard Recall@K asks: *"Did we retrieve the relevant documents?"*  
+Context Recall asks: *"Does the retrieved context cover all the facts in the correct answer?"* — it is answer-oriented and always requires a reference.
+
 **Formula**:
 
 $$\text{Context Recall} = \frac{|\text{reference claims attributable to retrieved context}|}{|\text{total reference claims}|}$$
