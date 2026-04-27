@@ -125,6 +125,22 @@ where $E_{g_i}$ = embedding of generated question $i$, $E_o$ = embedding of orig
 
 **Why this works**: If the response truly answers the question, reverse-engineered questions should be semantically similar to the original.
 
+**Intuition by example**:
+
+*Good response* — Original question: *"What is the capital of France?"*
+- Response: *"Paris is the capital of France, located on the Seine river."*
+- Generated questions from response: *"What is France's capital?"*, *"Which city is the capital of France?"*, *"What is the capital city of France?"*
+- These are very similar to the original → high cosine similarity → **high score**
+
+*Bad response (off-topic)* — Original question: *"What is the capital of France?"*
+- Response: *"France has a population of 67 million and is known for wine."*
+- Generated questions: *"What is France known for?"*, *"What is the population of France?"*
+- These are **not similar** to the original → low cosine similarity → **low score**
+
+**Why not just compare the response to the question directly?** A good answer rarely *looks like* the question textually. "Paris" doesn't resemble "What is the capital of France?" But a question reverse-engineered from "Paris is the capital..." *does* resemble the original. The reverse-engineering step creates a comparable representation.
+
+**The blind spot**: A confident but *wrong* answer like *"Lyon is the capital of France"* generates questions like *"What is the capital of France?"* → high similarity → high score. It measures **topicality**, not **correctness**. That's why you need Factual Correctness separately.
+
 **Key interview points**:
 - Reference-free → usable in production
 - Cannot detect factual errors — a confidently wrong answer scores high
